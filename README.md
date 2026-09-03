@@ -48,8 +48,25 @@ Coordinates are `(row, col)` with **row 0 = bottom, row 3 = top**.
 - **0.02348 mm** per count
 - **11925 counts** = one 280 mm cell — verified on the floor
 
+## Testing without hardware
+
+```
+python3 tools/test_solver.py    # 192 runs: 16 start cells x 4 headings x 3 algos
+python3 tools/test_runner.py    # run lifecycle: latching, mid-run lock, reset
+python3 tools/serve_local.py    # the real dashboard + real logic on localhost:8080
+```
+
+`serve_local.py` reuses `runner.py` and `index.html` unchanged, so it exercises the
+actual contract rather than a mock of it. Only the motors are missing.
+
+## The algorithm is latched per run
+
+A run finishes with the algorithm it started with. `/run` latches `state["algo"]` into
+`state["active_algo"]`; `/select` returns **409** while `running`, and the dashboard
+dims the buttons. `/reset` is the way to abort and switch.
+
 ## Status
-Working: motors, encoders (calibrated), power chain, straight one-cell drive,
-all three algorithms, dashboard, server + state plumbing.
-Remaining: 90° turn calibration (needs wheelbase), sonar integration, swapping
-the simulated `robot_task()` block for the real movement loop.
+Working: motors, encoders (calibrated), power chain, straight one-cell drive, all three
+algorithms (tested from every cell), run lifecycle + lock, dashboard, server plumbing.
+Remaining: 90° turn calibration (needs wheelbase), sonar integration, swapping the
+simulated block in `robot_task()` for the real movement loop.

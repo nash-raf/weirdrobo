@@ -72,6 +72,9 @@
   .algo.sel{border-color:var(--robot);background:#eafaf7;color:#0b7d70}
   .algo .tag{font-size:10px;letter-spacing:1px;color:var(--ink-dim);text-transform:uppercase}
   .algo.sel .tag{color:#0b7d70}
+  /* mid-run the algorithm is latched - a run finishes as it started */
+  .algo.locked{opacity:.45;cursor:not-allowed}
+  .algo.locked:hover{border-color:var(--line)}
   .runbar{display:flex;gap:10px;margin-top:16px}
   .btn{flex:1;border-radius:10px;padding:13px;font:inherit;font-size:13px;letter-spacing:1px;
     text-transform:uppercase;cursor:pointer;font-weight:600;background:var(--robot);color:#fff;border:1px solid transparent}
@@ -167,19 +170,36 @@ function draw(state){
   const msg=document.getElementById('msg');
   document.getElementById('msgtext').textContent=message||'Running…';
   msg.classList.toggle('alert',/wall/i.test(message||''));
+
+  // The algorithm is latched for the whole run: show which one is executing
+  // and stop the user picking another until the run ends or is reset.
+  locked=!!state.running;
+  const shown=state.active_algo||state.algo;
+  if(shown&&shown!==selected)markSelected(shown);
+  document.querySelectorAll('.algo').forEach(b=>b.classList.toggle('locked',locked));
+  document.getElementById('run').textContent=locked?'Running':'Run';
 }
 
-let selected='floodfill';
-document.querySelectorAll('.algo').forEach(b=>{b.onclick=()=>{
-  document.querySelectorAll('.algo').forEach(x=>x.classList.remove('sel'));
-  b.classList.add('sel');selected=b.dataset.algo;api('/select?algo='+selected);};});
+let selected='floodfill', locked=false;
+function markSelected(algo){
+  selected=algo;
+  document.querySelectorAll('.algo').forEach(x=>x.classList.toggle('sel',x.dataset.algo===algo));
+}
+document.querySelectorAll('.algo').forEach(b=>{b.onclick=async()=>{
+  if(locked)return;                       // latched mid-run; Reset to change it
+  markSelected(b.dataset.algo);
+  const r=await api('/select?algo='+b.dataset.algo);
+  if(r&&r.algo)markSelected(r.algo);      // server is the authority (409 -> snap back)
+};});
 document.getElementById('run').onclick=()=>{ if(usePico){api('/run');} else {MOCK.run();} };
 document.getElementById('reset').onclick=()=>{ if(usePico){api('/reset');} else {MOCK.reset();} };
 
 // usePico is decided by a one-time probe: if /state answers, we're on a real
 // Pico; if not (opened as a file, or in a preview pane), use the simulator.
 let usePico=false, probed=false;
-async function api(path){try{await fetch(path,{method:'POST'});}catch(e){}}
+async function api(path){
+  try{const r=await fetch(path,{method:'POST'});return await r.json();}catch(e){return null;}
+}
 async function poll(){
   if(!probed){
     probed=true;

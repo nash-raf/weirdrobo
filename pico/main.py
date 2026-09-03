@@ -1,115 +1,51 @@
 # Maze Solver Robot - Pico W async web server + robot control loop.
 #
 # GOLDEN RULE: the dashboard only ever reads/writes the single shared `state`
-# dict below. It never touches motors or sensors. The robot loop writes `state`,
-# the web server serves it. That is the entire interface between the two halves.
+# dict. It never touches motors or sensors. The robot loop writes `state`, the
+# web server serves it. That is the entire interface between the two halves.
+#
+# The run logic lives in runner.py / solver.py, which have no MicroPython
+# dependencies and are tested on a desktop by tools/test_runner.py. This file
+# is only the async plumbing.
 
 import gc
-import time
 import network
 import uasyncio as asyncio
+import ujson
 
 import config
-import maze
+from runner import Runner, ALGOS
 
-# --------------------------------------------------------------- shared state
-state = {
-    "pos": list(config.START),      # [row, col]
-    "heading": "S",                 # "N" | "S" | "E" | "W"
-    "discovered": ["%d,%d" % config.START],
-    "explored": 1,
-    "elapsed": 0.0,
-    "message": "Standing by.",
-    "algo": "floodfill",
-    "running": False,
-    "start": list(config.START),
-    "goal": list(config.GOAL),
-}
+RUN = Runner()
 
-_run_started_ms = 0
-
-
-def reset_state():
-    global _run_started_ms
-    state["pos"] = list(config.START)
-    state["heading"] = "S"
-    state["discovered"] = ["%d,%d" % config.START]
-    state["explored"] = 1
-    state["elapsed"] = 0.0
-    state["message"] = "Standing by."
-    state["running"] = False
-    _run_started_ms = 0
-
-
-def mark_discovered(r, c):
-    k = "%d,%d" % (r, c)
-    if k not in state["discovered"]:
-        state["discovered"].append(k)
-        state["explored"] = len(state["discovered"])
-
-
-def _json(obj):
-    """Tiny JSON encoder - ujson exists on the Pico, this keeps it dependency free."""
-    import ujson
-    return ujson.dumps(obj)
+STEP_PAUSE_MS = 700         # simulated pace per cell; the real robot sets its own
 
 
 # ------------------------------------------------------------------ robot loop
-STEP_PAUSE_MS = 700     # simulated time per cell; the real robot sets its own pace
-
-
 async def robot_task():
-    global _run_started_ms
     while True:
-        if not state["running"]:
+        if not RUN.state["running"]:
             await asyncio.sleep_ms(100)
             continue
 
         # vvvv REPLACE THIS BLOCK FOR THE REAL ROBOT vvvv
-        # See docs/CONTEXT.md section 5. The pieces already exist in movement.py/sonar.py:
-        #   - read 3 ultrasonics -> set state["message"] ("wall in front" etc.)
-        #   - mark_discovered(r, c) for the current cell
-        #   - drive one cell (~11925 counts) -> update state["pos"]
-        #   - update state["heading"] on turns
-        #   - let state["algo"] pick the next move
-        #   - keep awaiting so the web server keeps serving
-        r, c = state["pos"]
-        mark_discovered(r, c)
-
-        if (r, c) == tuple(config.GOAL):
-            state["running"] = False
-            state["message"] = "Goal reached."
-            await asyncio.sleep_ms(100)
-            continue
-
-        nxt, heading = maze.next_move(state["algo"], (r, c), state["heading"])
-        if nxt == (r, c):
-            state["running"] = False
-            state["message"] = "Stuck - no move available."
-            await asyncio.sleep_ms(100)
-            continue
-
-        if maze.has_wall(r, c, state["heading"]):
-            state["message"] = "wall in front"
-        elif maze.has_wall(r, c, maze.LEFT_OF[state["heading"]]):
-            state["message"] = "wall on left"
-        elif maze.has_wall(r, c, maze.RIGHT_OF[state["heading"]]):
-            state["message"] = "wall on right"
-        else:
-            state["message"] = "Driving to %d,%d" % nxt
-
-        state["heading"] = heading
+        # RUN.advance() decides WHERE to go next and updates `state`. The only
+        # thing missing here is physically going there. For the real robot:
+        #
+        #   target = RUN.solver.pos          # before advance: where we are
+        #   RUN.advance()                    # -> RUN.state["heading"], ["pos"]
+        #   await mv.face(old_heading, RUN.state["heading"])
+        #   await mv.forward_cell()          # ~11925 counts
+        #
+        # See docs/CONTEXT.md section 5.
+        RUN.advance()
         await asyncio.sleep_ms(STEP_PAUSE_MS)
-        state["pos"] = list(nxt)
-        mark_discovered(*nxt)
         # ^^^^ END BLOCK ^^^^
 
-        if _run_started_ms:
-            state["elapsed"] = (time.ticks_ms() - _run_started_ms) / 1000.0
         await asyncio.sleep(0)
 
 
-# ----------------------------------------------------------------- web server
+# ------------------------------------------------------------------ web server
 def _read_file(name):
     try:
         with open(name, "rb") as f:
@@ -118,19 +54,43 @@ def _read_file(name):
         return None
 
 
-async def _send(writer, status, ctype, body, extra=""):
+async def _send(writer, status, ctype, body):
     if isinstance(body, str):
         body = body.encode()
     head = ("HTTP/1.1 %s\r\nContent-Type: %s\r\nContent-Length: %d\r\n"
-            "Cache-Control: no-store\r\nConnection: close\r\n%s\r\n"
-            % (status, ctype, len(body), extra))
+            "Cache-Control: no-store\r\nConnection: close\r\n\r\n"
+            % (status, ctype, len(body)))
     writer.write(head.encode())
     writer.write(body)
     await writer.drain()
 
 
+async def _json(writer, obj, status="200 OK"):
+    await _send(writer, status, "application/json", ujson.dumps(obj))
+
+
+def _query(q):
+    out = {}
+    for kv in q.split("&"):
+        if not kv:
+            continue
+        k, _, v = kv.partition("=")
+        out[k] = v
+    return out
+
+
+def _parse_cell(text):
+    """'2,1' -> (2, 1); None if malformed or off-grid."""
+    try:
+        r, c = [int(x) for x in text.split(",")]
+    except (ValueError, AttributeError):
+        return None
+    if 0 <= r < config.GRID and 0 <= c < config.GRID:
+        return (r, c)
+    return None
+
+
 async def handle(reader, writer):
-    global _run_started_ms
     try:
         line = await reader.readline()
         if not line:
@@ -138,13 +98,14 @@ async def handle(reader, writer):
         parts = line.decode().split()
         if len(parts) < 2:
             return
-        method, target = parts[0], parts[1]
-        while True:                              # drain headers
+        target = parts[1]
+        while True:                                  # drain headers
             h = await reader.readline()
             if not h or h == b"\r\n":
                 break
 
         path, _, query = target.partition("?")
+        args = _query(query)
 
         if path == "/":
             page = _read_file("index.html")
@@ -155,31 +116,25 @@ async def handle(reader, writer):
                 await _send(writer, "200 OK", "text/html; charset=utf-8", page)
 
         elif path == "/state":
-            await _send(writer, "200 OK", "application/json", _json(state))
+            await _json(writer, RUN.state)
 
         elif path == "/select":
-            algo = "floodfill"
-            for kv in query.split("&"):
-                k, _, v = kv.partition("=")
-                if k == "algo":
-                    algo = v
-            if algo in maze.STEPPERS:
-                state["algo"] = algo
-                await _send(writer, "200 OK", "application/json", _json({"ok": True, "algo": algo}))
-            else:
-                await _send(writer, "400 Bad Request", "application/json",
-                            _json({"ok": False, "error": "unknown algo"}))
+            ok, why = RUN.select(args.get("algo", ""))
+            # 409 on a mid-run change, so the dashboard can resync rather than
+            # quietly disagreeing with the robot about what is executing.
+            await _json(writer, {"ok": ok, "algo": RUN.state["algo"], "error": None if ok else why},
+                        "200 OK" if ok else "409 Conflict")
 
         elif path == "/run":
-            reset_state()
-            _run_started_ms = time.ticks_ms()
-            state["running"] = True
-            state["message"] = "Running %s." % state["algo"]
-            await _send(writer, "200 OK", "application/json", _json({"ok": True}))
+            start = _parse_cell(args["start"]) if "start" in args else None
+            ok, why = RUN.run(start=start, heading=args.get("heading"))
+            await _json(writer, {"ok": ok, "algo": RUN.state["active_algo"],
+                                 "error": None if ok else why},
+                        "200 OK" if ok else "409 Conflict")
 
         elif path == "/reset":
-            reset_state()
-            await _send(writer, "200 OK", "application/json", _json({"ok": True}))
+            RUN.stop()
+            await _json(writer, {"ok": True})
 
         else:
             await _send(writer, "404 Not Found", "text/plain", "not found")
@@ -193,8 +148,9 @@ async def handle(reader, writer):
         gc.collect()
 
 
-# ----------------------------------------------------------------------- wifi
+# ------------------------------------------------------------------------ wifi
 def connect_wifi(timeout_s=20):
+    import time
     wlan = network.WLAN(network.STA_IF)
     wlan.active(True)
     if not wlan.isconnected():
@@ -213,8 +169,8 @@ def connect_wifi(timeout_s=20):
 async def main():
     connect_wifi()
     asyncio.create_task(robot_task())
-    server = await asyncio.start_server(handle, "0.0.0.0", 80)
-    print("server up")
+    await asyncio.start_server(handle, "0.0.0.0", 80)
+    print("server up, algorithms:", ALGOS)
     while True:
         await asyncio.sleep(1)
 
