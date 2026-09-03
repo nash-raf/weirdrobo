@@ -14,11 +14,27 @@ import uasyncio as asyncio
 import ujson
 
 import config
+import maze
 from runner import Runner, ALGOS
 
 RUN = Runner()
 
-STEP_PAUSE_MS = 700         # simulated pace per cell; the real robot sets its own
+STEP_PAUSE_MS = 700         # pace per cell when SIMULATE is on
+
+# Hardware is wired up lazily: config.SIMULATE lets the whole stack run on a
+# Pico with nothing bolted to it, and keeps import errors out of boot.
+ROBOT = None
+MOTION = None
+
+
+def _hardware():
+    global ROBOT, MOTION
+    if MOTION is None:
+        from hardware import Robot
+        from motion import Motion
+        ROBOT = Robot()
+        MOTION = Motion(ROBOT)
+    return ROBOT, MOTION
 
 
 # ------------------------------------------------------------------ robot loop
@@ -28,19 +44,33 @@ async def robot_task():
             await asyncio.sleep_ms(100)
             continue
 
-        # vvvv REPLACE THIS BLOCK FOR THE REAL ROBOT vvvv
-        # RUN.advance() decides WHERE to go next and updates `state`. The only
-        # thing missing here is physically going there. For the real robot:
-        #
-        #   target = RUN.solver.pos          # before advance: where we are
-        #   RUN.advance()                    # -> RUN.state["heading"], ["pos"]
-        #   await mv.face(old_heading, RUN.state["heading"])
-        #   await mv.forward_cell()          # ~11925 counts
-        #
-        # See docs/CONTEXT.md section 5.
-        RUN.advance()
-        await asyncio.sleep_ms(STEP_PAUSE_MS)
-        # ^^^^ END BLOCK ^^^^
+        if config.SIMULATE:
+            RUN.advance()
+            await asyncio.sleep_ms(STEP_PAUSE_MS)
+            await asyncio.sleep(0)
+            continue
+
+        try:
+            robot, motion = _hardware()
+
+            # Sense first, while stopped - an HC-SR04 ping blocks ~30 ms and
+            # would stall both the control loop and the web server mid-move.
+            walls = robot.walls()
+            RUN.note_walls(walls)
+
+            heading_before = RUN.state["heading"]
+            RUN.advance()                       # decides WHERE to go next
+            heading_after = RUN.state["heading"]
+
+            if RUN.state["pos"] != RUN.state["start"] or RUN.solver.steps:
+                action = maze.action_for_turn(heading_before, heading_after)
+                await motion.execute(action)    # turn (or drive, if forward)
+                if action != "forward":
+                    await motion.forward_one_cell()
+        except Exception as exc:                # never leave the motors running
+            if MOTION is not None:
+                MOTION.emergency_stop()
+            RUN.fail(type(exc).__name__ + ": " + str(exc))
 
         await asyncio.sleep(0)
 

@@ -42,6 +42,8 @@ class Runner:
             "running": False,
             "start": list(start),
             "goal": list(GOAL),
+            "sensed": {},           # "row,col" -> absolute wall sides seen there
+            "error": None,
         }
 
     # -- commands ----------------------------------------------------------
@@ -72,6 +74,43 @@ class Runner:
 
     def stop(self):
         self.reset(algo=self.state["algo"], start=self.state["start"])
+
+    def fail(self, reason):
+        """Abort the run and say why. Used when a motion primitive throws."""
+        self.state["running"] = False
+        self.state["active_algo"] = None
+        self.state["error"] = reason
+        self.state["message"] = reason
+
+    # -- sensing -----------------------------------------------------------
+    def note_walls(self, walls):
+        """Record what the sonars saw at the current cell.
+
+        `walls` is robot-relative ({"front","left","right"} -> bool); it is
+        converted to absolute maze sides here so the dashboard never has to
+        know which way the robot is facing. Stored under "sensed" so the
+        pre-mapped walls in maze.py stay the thing being navigated on - this
+        is observation, not yet the map.
+        """
+        h = self.state["heading"]
+        sides = []
+        if walls.get("front"):
+            sides.append(h)
+        if walls.get("left"):
+            sides.append(maze.LEFT_OF[h])
+        if walls.get("right"):
+            sides.append(maze.RIGHT_OF[h])
+        self.state["sensed"][_key(self.state["pos"])] = sides
+
+        if walls.get("front"):
+            self.state["message"] = "wall in front"
+        elif walls.get("left"):
+            self.state["message"] = "wall on left"
+        elif walls.get("right"):
+            self.state["message"] = "wall on right"
+        else:
+            self.state["message"] = "clear ahead"
+        return sides
 
     # -- the loop ----------------------------------------------------------
     def advance(self):

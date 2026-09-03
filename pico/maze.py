@@ -19,6 +19,24 @@ LEFT_OF = {"N": "W", "W": "S", "S": "E", "E": "N"}
 BACK_OF = {"N": "S", "S": "N", "E": "W", "W": "E"}
 
 
+def action_for_turn(heading, target):
+    """What the robot must physically do to go from facing `heading` to `target`.
+
+    Pure geometry, no hardware - so it is tested on a desktop like everything
+    else in this file. Returns one of: forward, turn_left, turn_right,
+    turn_around.
+    """
+    if target == heading:
+        return "forward"
+    if target == RIGHT_OF[heading]:
+        return "turn_right"
+    if target == LEFT_OF[heading]:
+        return "turn_left"
+    if target == BACK_OF[heading]:
+        return "turn_around"
+    raise ValueError("bad heading pair: %s -> %s" % (heading, target))
+
+
 def key(r, c):
     return "%d,%d" % (r, c)
 

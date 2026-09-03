@@ -7,15 +7,23 @@ position, discovered walls, and telemetry.
 pico/
   main.py       async web server + robot control loop (owns the shared `state`)
   index.html    the dashboard (falls back to a built-in simulator with no Pico)
-  maze.py       known maze map + flood fill / left-hand rule / A*
-  config.py     GPIO map + measured calibration constants
-  motors.py     TB6612FNG driver
-  encoders.py   x4 quadrature decoding
-  sonar.py      3× HC-SR04+ (left / front / right)
-  movement.py   one-cell drive, 90° turn
+  runner.py     run lifecycle, algorithm latching, telemetry  (desktop-testable)
+  solver.py     one-cell-at-a-time solving from any start cell (desktop-testable)
+  maze.py       known maze map, the three algorithms, turn geometry
+  config.py     GPIO map, measured calibration, drive limits, PID gains
+  hardware.py   HC-SR04+ / quadrature encoders / TB6612FNG  (MicroPython only)
+  motion.py     PID cell drive, 90° turns, command timeouts  (MicroPython only)
+tools/
+  test_solver.py, test_runner.py, serve_local.py
 docs/
   CONTEXT.md    full project handoff: hardware, contract, build status
 ```
+
+`hardware.py` and `motion.py` are adapted from `firmware/` on
+[samiulislam07/autonomous-maze-solving-robot @ Samiul](https://github.com/samiulislam07/autonomous-maze-solving-robot/tree/Samiul),
+re-pointed at this project's measured calibration. The motion primitives were
+made `async` — on this build the web server shares the single core with the
+robot loop, so a blocking move would freeze the dashboard for the whole 28 cm.
 
 ## Quick look at the dashboard
 Open `pico/index.html` in a browser. With no Pico reachable it auto-detects and

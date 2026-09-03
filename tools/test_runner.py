@@ -95,5 +95,38 @@ check("running cleared at goal", not r.state["running"])
 check("elapsed advanced", r.state["elapsed"] > 0)
 check("message reports arrival", "Goal" in r.state["message"], r.state["message"])
 
+print("\nSENSING -> ABSOLUTE WALLS")
+r = Runner(now=Clock())
+r.run(start=(3, 0))
+r.state["heading"] = "S"
+sides = r.note_walls({"front": True, "left": False, "right": True})
+check("front+right while facing S -> S and W", sorted(sides) == ["S", "W"], str(sides))
+check("message reports the front wall", r.state["message"] == "wall in front")
+check("sensed recorded against the cell", r.state["sensed"].get("3,0") == sides)
+r.state["heading"] = "E"
+sides = r.note_walls({"front": False, "left": True, "right": False})
+check("left while facing E -> N", sides == ["N"], str(sides))
+check("message reports the left wall", r.state["message"] == "wall on left")
+sides = r.note_walls({"front": False, "left": False, "right": False})
+check("no walls -> clear ahead", sides == [] and r.state["message"] == "clear ahead")
+
+print("\nFAILURE PATH")
+r = Runner(now=Clock())
+r.run()
+r.fail("MotionTimeout: stalled")
+check("fail clears running", not r.state["running"])
+check("fail clears active_algo", r.state["active_algo"] is None)
+check("fail records the reason", r.state["error"] == "MotionTimeout: stalled")
+ok, _ = r.select("astar")
+check("can select again after a failure", ok)
+
+print("\nTURN GEOMETRY")
+import maze as _maze
+pairs = [("N", "N", "forward"), ("N", "E", "turn_right"), ("N", "W", "turn_left"),
+         ("N", "S", "turn_around"), ("E", "S", "turn_right"), ("W", "N", "turn_right")]
+bad = [(h, t, _maze.action_for_turn(h, t)) for h, t, want in pairs
+       if _maze.action_for_turn(h, t) != want]
+check("action_for_turn correct on all sampled pairs", not bad, str(bad))
+
 print("\n%s" % ("all passed" if not fails else "%d FAILED: %s" % (len(fails), fails)))
 sys.exit(1 if fails else 0)
