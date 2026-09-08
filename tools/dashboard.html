@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Maze Robot — Live</title>
+<style>
+  /* Same drafting-paper look as pico/index.html: this is that dashboard,
+     re-pointed at the public hub so the Pico drives it over the internet. */
+  :root{
+    --paper:#f7f5ef; --card:#ffffff; --line:#e2ddd0;
+    --ink:#1f2a33; --ink-dim:#8a8577; --grid:#ece7db;
+    --wall-faint:#aca591; --wall:#1f2a33; --wall-found:#0e9e8e;
+    --robot:#0e9e8e; --robot-soft:#0e9e8e22;
+    --explored:#eef6f4; --goal:#e5674f; --start:#e9e3d2; --gold:#b8860b;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{background:radial-gradient(1000px 500px at 80% -15%,#fffdf7 0%,transparent 55%),var(--paper);
+    color:var(--ink);font-family:"IBM Plex Mono",ui-monospace,Menlo,Consolas,monospace;
+    -webkit-font-smoothing:antialiased;display:flex;justify-content:center;padding:24px}
+  .shell{width:100%;max-width:1060px}
+  header{display:flex;align-items:baseline;justify-content:space-between;
+    border-bottom:1.5px solid var(--ink);padding-bottom:12px;margin-bottom:18px;flex-wrap:wrap;gap:8px}
+  .brand{display:flex;align-items:baseline;gap:12px}
+  .brand h1{font-family:"Space Grotesk",system-ui,sans-serif;font-weight:600;font-size:21px;letter-spacing:.5px;margin:0}
+  .brand .dot{width:9px;height:9px;border-radius:50%;background:var(--robot);
+    box-shadow:0 0 0 3px var(--robot-soft);align-self:center;animation:pulse 1.6s ease-in-out infinite}
+  @keyframes pulse{50%{opacity:.4}}
+  .conn{font-size:12px;color:var(--ink-dim)}
+  .conn b{color:var(--robot);font-weight:600}
+  .conn b.off{color:var(--goal)}
+
+  /* the one thing the demo is about: what the ultrasonic sees, right now */
+  #ahead{border:1.5px solid var(--line);border-radius:14px;padding:16px 18px;margin-bottom:18px;
+    background:var(--card);display:flex;align-items:center;gap:16px;transition:border-color .2s,background .2s}
+  #ahead .big{font-family:"Space Grotesk",system-ui,sans-serif;font-size:27px;font-weight:600;letter-spacing:.5px}
+  #ahead .sub{font-size:12px;color:var(--ink-dim);margin-top:2px}
+  #ahead .eye{width:14px;height:14px;border-radius:50%;background:var(--ink-dim);flex:0 0 auto}
+  #ahead.clear{border-color:var(--robot);background:#f2fbf9}
+  #ahead.clear .big{color:#0b7d70} #ahead.clear .eye{background:var(--robot)}
+  #ahead.wall{border-color:var(--goal);background:#fdf1ee}
+  #ahead.wall .big{color:#a23b2a} #ahead.wall .eye{background:var(--goal)}
+  #ahead.goal{border-color:var(--gold);background:#fdf8e8}
+  #ahead.goal .big{color:var(--gold)} #ahead.goal .eye{background:var(--gold)}
+
+  .grid{display:grid;grid-template-columns:minmax(0,1fr) 310px;gap:22px}
+  @media(max-width:820px){.grid{grid-template-columns:1fr}}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px;
+    box-shadow:0 1px 0 #00000008,0 6px 20px #1f2a3308}
+  .card h2{font-family:"Space Grotesk",system-ui,sans-serif;font-size:11px;letter-spacing:2px;
+    text-transform:uppercase;color:var(--ink-dim);margin:0 0 14px;font-weight:600}
+  .maze-wrap{display:flex;justify-content:center}
+  #maze{width:100%;max-width:460px;aspect-ratio:1/1}
+  .cell-bg{fill:var(--card)} .cell-explored{fill:var(--explored)}
+  .cell-start{fill:var(--start)} .cell-goal{fill:var(--goal);opacity:.16}
+  .sep{stroke:var(--grid);stroke-width:1}
+  .wall{stroke:var(--wall-faint);stroke-width:3.5;stroke-linecap:round;transition:stroke .3s,stroke-width .3s}
+  .wall.on{stroke:var(--wall);stroke-width:6}
+  .wall.found{stroke:var(--wall-found);stroke-width:7}
+  .trail{stroke:var(--robot);stroke-width:2.5;fill:none;opacity:.30;stroke-linejoin:round;stroke-linecap:round}
+  .robot{fill:var(--robot);transition:cx .3s ease,cy .3s ease}
+  .robot-ring{fill:none;stroke:var(--robot);stroke-width:2;opacity:.35}
+  .robot-heading{stroke:#fff;stroke-width:2.5;stroke-linecap:round}
+  .label{font-family:"Space Grotesk",sans-serif;font-weight:700;font-size:20px}
+  .label.s{fill:var(--ink-dim)} .label.e{fill:var(--goal)}
+  .legend{display:flex;gap:14px;flex-wrap:wrap;margin-top:14px;font-size:11px;color:var(--ink-dim)}
+  .legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:-1px;border:1px solid #0002}
+  .dims{margin-top:10px;font-size:11px;color:var(--ink-dim)}
+
+  .stats{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  .stat{background:var(--paper);border:1px solid var(--line);border-radius:10px;padding:12px}
+  .stat .k{font-size:10px;letter-spacing:1.5px;text-transform:uppercase;color:var(--ink-dim)}
+  .stat .v{font-size:25px;margin-top:4px;font-variant-numeric:tabular-nums}
+  .stat .v small{font-size:11px;color:var(--ink-dim);white-space:nowrap}
+  .sonar{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:12px}
+  .son{background:var(--paper);border:1px solid var(--line);border-radius:10px;padding:9px;text-align:center}
+  .son .k{font-size:10px;letter-spacing:1.5px;color:var(--ink-dim)}
+  .son .v{font-size:17px;font-variant-numeric:tabular-nums;margin-top:2px}
+  .son.near{border-color:var(--goal);background:#fdf1ee} .son.near .v{color:#a23b2a}
+
+  .algo{display:flex;align-items:center;justify-content:space-between;background:#eafaf7;
+    border:1px solid var(--robot);color:#0b7d70;border-radius:10px;padding:13px 15px;font-size:14px}
+  .algo .tag{font-size:10px;letter-spacing:1px;text-transform:uppercase}
+  .runbar{display:flex;gap:10px;margin-top:14px}
+  .btn{flex:1;border-radius:10px;padding:13px;font:inherit;font-size:13px;letter-spacing:1px;
+    text-transform:uppercase;cursor:pointer;font-weight:600;background:var(--robot);color:#fff;border:1px solid transparent}
+  .btn.ghost{background:transparent;color:var(--ink);border-color:var(--line)}
+  .btn:disabled{opacity:.45;cursor:not-allowed}
+  .btn:active:not(:disabled){transform:translateY(1px)}
+  .hint{font-size:11px;color:var(--ink-dim);margin-top:10px;line-height:1.6}
+  #log{margin-top:12px;max-height:190px;overflow-y:auto;font-size:12px;line-height:1.9}
+  #log div{border-bottom:1px dashed var(--line);padding:2px 0;display:flex;gap:8px}
+  #log .t{color:var(--ink-dim);flex:0 0 58px}
+  #log .k{font-weight:600;flex:0 0 62px;text-transform:uppercase;font-size:10px;letter-spacing:1px;padding-top:2px}
+  #log .k.forward{color:var(--robot)} #log .k.turn{color:var(--gold)}
+  #log .k.goal{color:var(--goal)} #log .k.sense{color:var(--ink-dim)}
+  #log .k.trim{color:var(--gold)} #log .k.stuck{color:var(--goal)}
+  footer{margin-top:18px;text-align:center;font-size:12px;color:var(--ink-dim)}
+  footer a{color:var(--robot);text-decoration:none;margin:0 8px}
+</style>
+</head>
+<body>
+<div class="shell">
+  <header>
+    <div class="brand"><span class="dot"></span><h1>MAZE ROBOT · LIVE</h1></div>
+    <div class="conn">link <b id="conn">connecting…</b> · algorithm <b>left-hand rule</b></div>
+  </header>
+
+  <div id="ahead"><div class="eye"></div><div>
+    <div class="big" id="aheadbig">STANDING BY</div>
+    <div class="sub" id="aheadsub">waiting for the Pico</div>
+  </div></div>
+
+  <div class="grid">
+    <div class="card">
+      <h2>Live Map · 4×4</h2>
+      <div class="maze-wrap"><svg id="maze" viewBox="0 0 420 420" xmlns="http://www.w3.org/2000/svg"></svg></div>
+      <div class="legend">
+        <span><i style="background:var(--robot)"></i>robot</span>
+        <span><i style="background:var(--explored)"></i>visited</span>
+        <span><i style="background:var(--wall-faint)"></i>maze wall</span>
+        <span><i style="background:var(--wall-found)"></i>wall the sonar found</span>
+        <span><i style="background:var(--goal)"></i>goal</span>
+      </div>
+      <div class="dims">Cell 25×25 cm · wall 3 cm · pitch 28 cm/cell · every move below comes from the Pico</div>
+      <h2 style="margin-top:20px">What the robot did</h2>
+      <div id="log"><div><span class="t">—</span><span>no moves yet</span></div></div>
+    </div>
+
+    <div>
+      <div class="card" style="margin-bottom:22px">
+        <h2>Run</h2>
+        <div class="stats">
+          <div class="stat"><div class="k">Cells visited</div><div class="v" id="visited">1<small>/16</small></div></div>
+          <div class="stat"><div class="k">Elapsed</div><div class="v" id="timer">0.0<small>s</small></div></div>
+          <div class="stat"><div class="k">Cells moved</div><div class="v" id="steps">0<small id="acts"></small></div></div>
+          <div class="stat"><div class="k">Facing</div><div class="v" id="facing">E</div></div>
+        </div>
+        <div class="sonar">
+          <div class="son" id="sonL"><div class="k">LEFT</div><div class="v">—</div></div>
+          <div class="son" id="sonF"><div class="k">FRONT</div><div class="v">—</div></div>
+          <div class="son" id="sonR"><div class="k">RIGHT</div><div class="v">—</div></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Algorithm</h2>
+        <div class="algo"><span>Left-hand rule</span><span class="tag">wall follow</span></div>
+        <div class="runbar">
+          <button class="btn" id="run">Start run</button>
+          <button class="btn ghost" id="stop">Stop</button>
+        </div>
+        <div class="hint" id="hint">Start queues the run. The Pico picks it up on its next poll,
+          then drives the maze on its own — the map above just mirrors what it reports.</div>
+      </div>
+    </div>
+  </div>
+  <footer><a href="/runs">run history →</a></footer>
+</div>
+
+<script>
+const MAZE={"0,0":["E","S","W"],"0,1":["S","W"],"0,2":["E","S"],"0,3":["E","S","W"],"1,0":["W"],"1,1":["E","N"],"1,2":["W"],"1,3":["E","N"],"2,0":["N","W"],"2,1":["E","S"],"2,2":["E","W"],"2,3":["E","S","W"],"3,0":["N","S","W"],"3,1":["E","N"],"3,2":["N","W"],"3,3":["E","N"]};
+const START=[3,0], GOAL=[0,3], N=4, CELL=420/N;
+const svg=document.getElementById('maze');
+function hasWall(r,c,side){const w=MAZE[r+','+c];return !!w&&w.includes(side);}
+function cellCentre(p){return [p[1]*CELL+CELL/2,(N-1-p[0])*CELL+CELL/2];}
+
+function drawMaze(st){
+  const visited=new Set(st.visited||[]), found=new Set(st.found_walls||[]);
+  const pos=st.pos||START, heading=st.heading||'E';
+  let s='';
+  for(let r=0;r<N;r++)for(let c=0;c<N;c++){
+    const x=c*CELL,y=(N-1-r)*CELL;
+    let cls='cell-bg';
+    if(r===START[0]&&c===START[1])cls='cell-start';
+    if(visited.has(r+','+c))cls='cell-explored';
+    if(r===GOAL[0]&&c===GOAL[1])s+='<rect x="'+x+'" y="'+y+'" width="'+CELL+'" height="'+CELL+'" class="cell-goal"/>';
+    s+='<rect x="'+x+'" y="'+y+'" width="'+CELL+'" height="'+CELL+'" class="'+cls+'"/>';
+    s+='<rect x="'+x+'" y="'+y+'" width="'+CELL+'" height="'+CELL+'" class="sep" fill="none"/>';
+  }
+  const line=(cls,x1,y1,x2,y2)=>'<line class="wall '+cls+'" x1="'+x1+'" y1="'+y1+'" x2="'+x2+'" y2="'+y2+'"/>';
+  for(let r=0;r<N;r++)for(let c=0;c<N;c++){
+    const x=c*CELL,y=(N-1-r)*CELL;
+    for(const side of ['N','S','W','E']){
+      if(!hasWall(r,c,side))continue;
+      // teal = this wall was actually detected by the sonar during the run
+      const cls=found.has(r+','+c+','+side)?'found':(visited.has(r+','+c)?'on':'');
+      if(side==='N')s+=line(cls,x,y,x+CELL,y);
+      if(side==='S')s+=line(cls,x,y+CELL,x+CELL,y+CELL);
+      if(side==='W')s+=line(cls,x,y,x,y+CELL);
+      if(side==='E')s+=line(cls,x+CELL,y,x+CELL,y+CELL);
+    }
+  }
+  const trail=st.trail||[];
+  if(trail.length>1){
+    s+='<polyline class="trail" points="'+trail.map(p=>cellCentre(p).join(',')).join(' ')+'"/>';
+  }
+  s+='<text class="label s" x="'+(START[1]*CELL+10)+'" y="'+((N-1-START[0])*CELL+26)+'">S</text>';
+  s+='<text class="label e" x="'+(GOAL[1]*CELL+CELL-24)+'" y="'+((N-1-GOAL[0])*CELL+CELL-12)+'">E</text>';
+  const [cx,cy]=cellCentre(pos);
+  s+='<circle class="robot-ring" cx="'+cx+'" cy="'+cy+'" r="'+(CELL*0.34)+'"/>';
+  s+='<circle class="robot" cx="'+cx+'" cy="'+cy+'" r="'+(CELL*0.22)+'"/>';
+  // N is up the map (row 3 is the top row), matching pico/maze.py
+  const d={N:[0,-1],S:[0,1],E:[1,0],W:[-1,0]}[heading]||[1,0];
+  s+='<line class="robot-heading" x1="'+cx+'" y1="'+cy+'" x2="'+(cx+d[0]*CELL*0.30)+'" y2="'+(cy+d[1]*CELL*0.30)+'"/>';
+  svg.innerHTML=s;
+}
+
+function son(id,mm){
+  const el=document.getElementById(id);
+  el.querySelector('.v').textContent=(mm==null)?'—':(mm>=1500?'open':Math.round(mm)+'mm');
+  el.classList.toggle('near',mm!=null&&mm<150);
+}
+
+let lastLogId=null;
+function drawLog(events){
+  if(!events||!events.length)return;
+  const sig=events[events.length-1].n;
+  if(sig===lastLogId)return;
+  lastLogId=sig;
+  document.getElementById('log').innerHTML=events.slice().reverse().map(e=>{
+    const t=new Date(e.ts*1000).toTimeString().slice(0,8);
+    return '<div><span class="t">'+t+'</span><span class="k '+e.kind+'">'+e.kind+
+      '</span><span>'+e.text+'</span></div>';
+  }).join('');
+}
+
+async function poll(){
+  let j;
+  try{ j=await (await fetch('/dash-state',{cache:'no-store'})).json(); }
+  catch(e){ document.getElementById('conn').innerHTML='<b class="off">offline</b>'; return; }
+
+  drawMaze(j);
+  const cn=document.getElementById('conn');
+  cn.textContent=j.link;
+  cn.className=(j.link==='pico · live')?'':'off';
+  document.getElementById('visited').innerHTML=(j.visited||[]).length+'<small>/16</small>';
+  document.getElementById('timer').innerHTML=(j.elapsed||0).toFixed(1)+'<small>s</small>';
+  document.getElementById('steps').innerHTML=(j.steps||0)+
+    '<small> &middot; '+((j.actions||0)-(j.steps||0))+' turns</small>';
+  document.getElementById('facing').textContent=j.heading||'—';
+  const s=j.sonar_mm||{}; son('sonL',s.L); son('sonF',s.F); son('sonR',s.R);
+
+  const a=document.getElementById('ahead');
+  a.className=j.status_kind||'';
+  document.getElementById('aheadbig').textContent=(j.status||'standing by').toUpperCase();
+  document.getElementById('aheadsub').textContent=j.status_sub||'';
+  document.getElementById('run').disabled=!!j.running;
+  document.getElementById('run').textContent=j.running?'Running…':'Start run';
+  document.getElementById('stop').disabled=!j.running;
+  drawLog(j.events);
+}
+document.getElementById('run').onclick=async()=>{
+  document.getElementById('hint').textContent='queued — waiting for the Pico to pick it up…';
+  const r=await (await fetch('/run-maze',{method:'POST'})).json();
+  if(!r.ok)document.getElementById('hint').textContent='could not start: '+r.error;
+  poll();
+};
+document.getElementById('stop').onclick=async()=>{
+  await fetch('/stop-maze',{method:'POST'}); poll();
+};
+drawMaze({pos:START,heading:'E',visited:['3,0']});
+poll(); setInterval(poll,400);
+</script>
+</body>
+</html>

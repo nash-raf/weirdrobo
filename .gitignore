@@ -3,3 +3,4 @@ __pycache__/
 .DS_Store
 *.uf2
 secrets.py
+weirdrobo.db

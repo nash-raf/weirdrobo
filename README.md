@@ -1,80 +1,144 @@
-# weirdrobo — Maze Solver Robot (Raspberry Pi Pico W)
+# weirdrobo — maze-solving robot
 
-A 4×4 maze-solving robot in MicroPython, with a WiFi dashboard showing live
-position, discovered walls, and telemetry.
+A Raspberry Pi Pico W solves a 4×4 maze with the **left-hand rule** — read
+three ultrasonics, always try to turn left, else straight, else right, else
+turn around. It has no map and no idea where it is. It just reports what it
+does, and a small web backend turns that stream into a live map, a run
+history, and a database.
+
+See **[ARCHITECTURE.md](ARCHITECTURE.md)** for exactly which file runs where
+and how a run flows end to end. This file is the how-to-run and how-it-thinks.
+
+## Repository layout
 
 ```
-pico/
-  main.py       async web server + robot control loop (owns the shared `state`)
-  index.html    the dashboard (falls back to a built-in simulator with no Pico)
-  runner.py     run lifecycle, algorithm latching, telemetry  (desktop-testable)
-  solver.py     one-cell-at-a-time solving from any start cell (desktop-testable)
-  maze.py       known maze map, the three algorithms, turn geometry
-  config.py     GPIO map, measured calibration, drive limits, PID gains
-  hardware.py   HC-SR04+ / quadrature encoders / TB6612FNG  (MicroPython only)
-  motion.py     PID cell drive, 90° turns, command timeouts  (MicroPython only)
+test/
+  reactive_solver.py       flash this onto the Pico. self-contained MicroPython.
 tools/
-  test_solver.py, test_runner.py, serve_local.py
-docs/
-  CONTEXT.md    full project handoff: hardware, contract, build status
+  telemetry_receiver.py    the backend hub - plain Python 3, stdlib only
+  maze_db.py                SQLite: one row per run, one row per move
+  dashboard.html             the web page the hub serves
+  server.sh                  optional: deploy/manage the hub on a remote host
 ```
 
-`hardware.py` and `motion.py` are adapted from `firmware/` on
-[samiulislam07/autonomous-maze-solving-robot @ Samiul](https://github.com/samiulislam07/autonomous-maze-solving-robot/tree/Samiul),
-re-pointed at this project's measured calibration. The motion primitives were
-made `async` — on this build the web server shares the single core with the
-robot loop, so a blocking move would freeze the dashboard for the whole 28 cm.
+That's the whole system. Nothing else in the repo runs.
 
-## Quick look at the dashboard
-Open `pico/index.html` in a browser. With no Pico reachable it auto-detects and
-runs a simulated robot walking the solution path.
+## Running it
 
-## On the robot
-1. Set `WIFI_SSID` / `WIFI_PASS` in `pico/config.py`.
-2. Copy everything in `pico/` to the Pico W filesystem.
-3. Reset. It prints `dashboard at http://<ip>/`.
-
-## The contract
-The dashboard only ever reads/writes one shared `state` dict. It never touches
-motors or sensors. See `docs/CONTEXT.md` §4.
-
-| Method | Path | Effect |
-|---|---|---|
-| GET | `/` | dashboard page |
-| GET | `/state` | the `state` JSON |
-| POST | `/select?algo=floodfill\|lefthand\|astar` | choose algorithm |
-| POST | `/run` | reset + start solving |
-| POST | `/reset` | back to standing by |
-
-## Maze
-4×4, cell interior 25 cm, wall 3 cm, **pitch 28 cm/cell**.
-Start `(3,0)` top-left, goal `(0,3)` bottom-right.
-Coordinates are `(row, col)` with **row 0 = bottom, row 3 = top**.
-
-## Calibration (measured, not datasheet)
-- CPR **5887** counts/wheel rev (x4 quadrature)
-- **0.02348 mm** per count
-- **11925 counts** = one 280 mm cell — verified on the floor
-
-## Testing without hardware
+**1. The backend**, anywhere with Python 3 (a laptop, a spare server, a Pi):
 
 ```
-python3 tools/test_solver.py    # 192 runs: 16 start cells x 4 headings x 3 algos
-python3 tools/test_runner.py    # run lifecycle: latching, mid-run lock, reset
-python3 tools/serve_local.py    # the real dashboard + real logic on localhost:8080
+python3 tools/telemetry_receiver.py
+# -> control hub on http://127.0.0.1:8787/
 ```
 
-`serve_local.py` reuses `runner.py` and `index.html` unchanged, so it exercises the
-actual contract rather than a mock of it. Only the motors are missing.
+Override the port/host with `RX_PORT` / `RX_HOST` env vars. The database file
+(`tools/weirdrobo.db`) is created next to `maze_db.py` on first run.
 
-## The algorithm is latched per run
+**2. The Pico.** Open `test/reactive_solver.py`, edit the top of the file:
 
-A run finishes with the algorithm it started with. `/run` latches `state["algo"]` into
-`state["active_algo"]`; `/select` returns **409** while `running`, and the dashboard
-dims the buttons. `/reset` is the way to abort and switch.
+```python
+WIFI_SSID = "your-wifi-name"
+WIFI_PASS = "your-wifi-password"
 
-## Status
-Working: motors, encoders (calibrated), power chain, straight one-cell drive, all three
-algorithms (tested from every cell), run lifecycle + lock, dashboard, server plumbing.
-Remaining: 90° turn calibration (needs wheelbase), sonar integration, swapping the
-simulated block in `robot_task()` for the real movement loop.
+CONTROL_URLS = [
+    "http://<HUB_HOST>:8787",   # wherever step 1 is running
+]
+```
+
+`CONTROL_URLS` is tried in order at boot — list more than one and the robot
+falls back automatically if the first is unreachable. Plain `http://` only:
+MicroPython's `urequests` does not follow redirects, so never put an
+`https://` URL in that list unless the backend itself is plain HTTP behind it.
+
+Flash it (Thonny: open the file, pick the Pico, Run — or save as `main.py` to
+run on power-up). It prints `link ok: <url>` once it finds the hub.
+
+**3. Open the dashboard** at `http://<HUB_HOST>:8787/` and press **Start**.
+
+## How it thinks
+
+Every step, in strict priority:
+
+```
+if left is open      -> turn left,  then forward one cell
+elif front is open   -> forward one cell
+elif right is open   -> turn right, then forward one cell
+else (dead end)       -> turn around, then forward one cell
+```
+
+This is only *guaranteed* to reach the goal in a **simply-connected** maze —
+every wall attached to the outer boundary, no free-standing islands — with the
+goal on the boundary. Check your own maze against that before trusting it.
+
+The robot never tracks its own position — that's the whole appeal of a
+reactive solver, and it's deliberately kept that way. The backend
+(`telemetry_receiver.py`) integrates the stream of `turn`/`forward` events
+into a cell + heading, and because it's the one holding coordinates, it's also
+the one that notices when the robot has reached the goal and tells it to stop.
+
+## Correcting drift, without position tracking
+
+Two independent problems, two fixes, neither of which needs the robot to know
+where it is:
+
+- **Turn creep.** A 90° spin should pivot about the axle centre. If one wheel
+  slips, the naive approach (wait for both wheels' *average* to reach target)
+  leaves the robot under-rotated *and* pushed forward. Fix: each wheel stops on
+  its own target, with a balance term keeping them together. The creep left
+  over is still measurable — in a pure spin the wheels counter-rotate, so the
+  **signed sum** of the two encoder counts is exactly the net forward slide —
+  and it's driven straight back out.
+- **Distance drift.** Dead-reckoned distance is fine for one cell and wrong by
+  the tenth. Fix: after every forward move, if there's a wall ahead, square up
+  to it at a fixed standoff (`FRONT_STOP_MM`). Every cell with a wall in front
+  resets position to sonar accuracy, so error can't accumulate past it.
+
+Both are bounded (`MAX_NUDGE_MM`) so one bad sonar reading can never drive the
+robot into a wall, and both are behind `USE_CORRECTION` in
+`reactive_solver.py` so you can A/B them in the real maze and compare the two
+runs in `/runs`. Every correction is reported to the website too — the event
+log and the database record lines like `turned right [crept +12.4mm, trimmed
+-12.1mm]`, so you can show the robot correcting itself, with numbers.
+
+## Calibration
+
+These live at the top of `reactive_solver.py` — measure your own robot, don't
+guess:
+
+| Constant | What it is |
+|---|---|
+| `MM_PER_COUNT` | wheel travel per encoder count (wheel circumference ÷ counts-per-rev, both measured) |
+| `CELL_CM` | maze cell pitch, centre to centre — everything else derives from this |
+| `TURN_COUNTS` | encoder counts for a 90° spin, tuned on the floor |
+| `WALL_THRESH_CM` | closer than this on a sonar = wall |
+| `FRONT_STOP_MM` | correct standoff from a wall directly ahead |
+
+## Runs are stored — SQLite
+
+`tools/maze_db.py`, one file (`tools/weirdrobo.db`). SQLite because it's in
+the Python standard library: no server, no user, no password, nothing to
+install. Two tables — `runs` (one row per attempt) and `events` (one row per
+sense/turn/forward, with the sonar readings behind each decision). `/runs`
+replays any past attempt move by move; `python3 tools/maze_db.py` self-tests
+the schema.
+
+## Deploying the hub — `server.sh`
+
+`tools/server.sh` is a small helper for running the hub on a remote host over
+SSH (edit the `HOST`/`KEY` variables at the top for your own machine):
+
+```
+./tools/server.sh status     is it up?
+./tools/server.sh log        recent hub log
+./tools/server.sh deploy     push local changes and restart
+./tools/server.sh db         run/event counts
+```
+
+It assumes the hub runs as a `systemd` service on the remote host so it
+survives reboots and restarts on crash — see the comments in the script for
+the unit file shape.
+
+**Whatever you run it on, be deliberate about exposure.** The dashboard has no
+login: anyone who can reach the port can press Start and drive the robot.
+Fine for a demo you're standing next to; not fine left open indefinitely.
